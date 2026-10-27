@@ -25,7 +25,8 @@ using ::android::hardware::gnss::V1_0::IGnssCallback;
 android::sp<IGnss> gnssHal = nullptr;
 int client_socket = -1;
 std::mutex socket_mutex;
-
+int *client=0;
+int client_count=0;
 class GnssCallbacks : public IGnssCallback {
 public:
     GnssCallbacks() {}

@@ -1,0 +1,252 @@
+#define LOG_TAG "gps_tcp_proxy"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <thread>
+#include <mutex>
+#include <vector>
+
+#include <android/hardware/gnss/1.0/IGnss.h>
+#include <android/hardware/gnss/1.0/IGnssCallback.h>
+#include <hwbinder/ProcessState.h>
+#include <utils/Log.h>
+
+using ::android::hardware::hidl_bitfield;
+using ::android::hardware::hidl_string;
+using ::android::hardware::Return;
+using ::android::hardware::Void;
+using ::android::hardware::gnss::V1_0::IGnss;
+using ::android::hardware::gnss::V1_0::IGnssCallback;
+
+android::sp<IGnss> gnssHal = nullptr;
+int runing = 1;
+int *client_arr = 0;
+int client_count = 0;
+int client_max = 0;
+int maxfd = 0;
+int gpson = 0;
+int cn=0;
+fd_set rd_set, wd_set;
+struct timeval tv = {0, 0};
+int sendd(int client_fd, char *buf, int ssize)
+{
+    int ret = 0;
+    int size = 0;
+    ret = ssize - size;
+    while (ret > 0)
+    {
+        ret = write(client_fd, buf, ssize - size);
+        if (ret < 1)
+        {
+            return -1;
+        }
+        buf += ret;
+        size += ret;
+        ret = ssize - size;
+    }
+    return size;
+}
+
+class GnssCallbacks : public IGnssCallback
+{
+public:
+    GnssCallbacks() {}
+
+    // 1. 拦截 NMEA 原始文本数据流
+    Return<void> gnssNmeaCb(int64_t timestamp, const hidl_string &nmea) override
+    {
+
+        if (client_count > 0 && runing)
+        {
+            maxfd = 0;
+            FD_ZERO(&wd_set);
+            for (int i = 0; i < client_count; ++i)
+            {
+                FD_SET(client_arr[i], &wd_set);
+                if (client_arr[i] > maxfd)
+                {
+                    maxfd = client_arr[i];
+                }
+            }
+            int ret = select(maxfd + 1, 0, &wd_set, 0, &tv);
+            if (ret > 0)
+            {
+                for (int i = 0; i < client_count; i++)
+                {
+                    if (FD_ISSET(client_arr[i], &wd_set))
+                    {
+                        int size = nmea.size();
+                        ssize_t ret = sendd(client_arr[i], (char *)nmea.c_str(), size);
+                        if (ret != nmea.size())
+                        {
+                            fprintf(stderr, "---------------------------TCP %d 客户端似乎断开了连接，发送失败还有%d。\n", client_arr[i], client_count - 1);
+                            close(client_arr[i]);
+                            memcpy(client_arr + i, client_arr + i + 1, sizeof(int) * (client_count - i - 1));
+                            client_count--;
+                            i--;
+                            printf("Failed to write NMEA data to TCP");
+                        }
+                    }
+                }
+            }
+            else
+                perror("错误 select()");
+        }
+        /*if (client_socket >= 0)
+        {
+            ssize_t ret = write(client_socket, nmea.c_str(), nmea.size());
+            if (ret < 0)
+            {
+                ALOGE("Failed to write NMEA data to TCP");
+            }
+            else
+            {
+                printf("%s", nmea.c_str());
+                fflush(stdout);
+            }
+        }*/
+        //printf("%s", nmea.c_str());
+        //fflush(stdout);
+        cn++;
+        if(cn==200)cn=0;
+        return Void();
+    }
+
+    // 2. 接收经纬度位置更新
+    Return<void> gnssLocationCb(const ::android::hardware::gnss::V1_0::GnssLocation &location) override
+    {
+        ALOGV("Location updated: Lat: %f, Lon: %f", location.latitudeDegrees, location.longitudeDegrees);
+        return Void();
+    }
+
+    // 3. 接收 GNSS 状态改变
+    Return<void> gnssStatusCb(IGnssCallback::GnssStatusValue status) override
+    {
+        ALOGI("GNSS Status changed: %d", static_cast<int>(status));
+        return Void();
+    }
+
+    // 4. 接收可见卫星状态信息（修复打印警告 %zu -> %u）
+    Return<void> gnssSvStatusCb(const IGnssCallback::GnssSvStatus &svStatus) override
+    {
+        ALOGV("Visible Satellites count: %u", svStatus.numSvs);
+        return Void();
+    }
+
+    // 5. 🌟【核心修复点】完美适配谷歌官方的错误拼写（少写了字母 i）以及专属的数据结构
+    Return<void> gnssSetCapabilitesCb(hidl_bitfield<IGnssCallback::Capabilities> capabilities) override
+    {
+        return Void();
+    }
+
+    // 6. 补全其余必须实现的硬件抽象虚函数
+    Return<void> gnssAcquireWakelockCb() override { return Void(); }
+    Return<void> gnssReleaseWakelockCb() override { return Void(); }
+    Return<void> gnssRequestTimeCb() override { return Void(); }
+    Return<void> gnssSetSystemInfoCb(const IGnssCallback::GnssSystemInfo &info) override { return Void(); }
+};
+void sigal_handler(int)
+{
+    printf("sigal_handler\n");
+    runing = 0;
+}
+int main()
+{
+    signal(SIGPIPE, SIG_IGN);
+    signal(2, sigal_handler);
+    client_max = 10;
+    client_arr = (int *)malloc(sizeof(int) * client_max);
+    if (!client_arr)
+    {
+        printf("内存分配失败\n");
+        return -1;
+    }
+    printf("Starting GNSS TCP Proxy Daemon (Port 9001)...\n");
+    android::hardware::ProcessState::self()->startThreadPool();
+
+    printf("[*] Fetching GNSS HIDL service...\n");
+    gnssHal = IGnss::getService("default");
+    if (gnssHal == nullptr)
+    {
+        gnssHal = IGnss::getService("gnss");
+    }
+
+    if (gnssHal == nullptr)
+    {
+        printf("[-] 致命错误：无法在当前手机系统中找到任何 GNSS HIDL 定位服务！\n");
+        return -1;
+    }
+    printf("[+] 成功连接至手机系统的 GNSS 定位硬件服务层！\n");
+
+    android::sp<IGnssCallback> callbacks = new GnssCallbacks();
+    Return<bool> result = gnssHal->setCallback(callbacks);
+    if (!result.isOk() || !result)
+    {
+        printf("[-] 错误：无法向 GNSS HAL 注入数据拦截监听回调。\n");
+        return -1;
+    }
+    printf("[+] 成功注册数据拦截回调。正在强行唤醒 GPS 搜星模块...\n");
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in address;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(9001);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
+    {
+        printf("[-] 绑定端口 9001 失败！\n");
+        return -1;
+    }
+    listen(server_fd, 1);
+    printf("[+] 卫星数据转发服务器已就绪，正在监听端口 9001...\n");
+    int cnn=0;
+    while (runing)
+    {
+        FD_ZERO(&rd_set);
+        FD_SET(server_fd, &rd_set);
+        int ret = select(server_fd + 1, &rd_set, 0, 0, &tv);
+        if (FD_ISSET(server_fd, &rd_set))
+        {
+            int new_socket = accept(server_fd, nullptr, nullptr);
+            if (new_socket < 0)
+                continue;
+            printf("[+] 电脑端已通过 9001 端口接入！开始无损导流卫星数据...\n");
+            client_arr[client_count++] = new_socket;
+        }
+        if (client_count > 0 && gpson == 0)
+        {
+            printf("开启gps\n");
+            gpson = 1;
+            gnssHal->start();
+        }
+        if (client_count == 0 && gpson == 1)
+        {
+             printf("关闭gps\n");
+            gpson = 0;
+            gnssHal->stop();
+        }
+        cnn=cn;
+        sleep(2);
+        if(cnn==cn&&gpson == 1){
+            printf("重启gps\n");
+            gnssHal->stop();
+            gnssHal->start();
+        }
+    }
+    for (int i = 0; i < client_count; i++)
+    {
+        close(client_arr[i]);
+    }
+    if( gpson == 1)gnssHal->stop();
+    close(server_fd);
+    return 0;
+}
+
