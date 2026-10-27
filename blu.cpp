@@ -140,9 +140,8 @@ void tcp_rx_thread_func() {
 }
 
 int main() {
-	printf("Starting Bluetooth H4 TCP Proxy...\n");
-return 0;	
-android::hardware::ProcessState::self()->startThreadPool();
+	printf("Starting Bluetooth H4 TCP Proxy...\n");	
+	android::hardware::ProcessState::self()->startThreadPool();
 
 	btHci = IBluetoothHci::getService();
 	if (btHci == nullptr) {
