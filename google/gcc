@@ -1,0 +1,11 @@
+#! /system/bin/sh
+export LineageOS=/data/.wode/android/lineageOS源码/lineage-18.1
+flist=/data/.wode/android/lineageOS源码/inc_list
+test -f "$LineageOS/inc_list"&&flist="$LineageOS/inc_list"
+if test -f "$flist";then 
+for inc in $(cat "$flist"|tr '\n' ' ');do
+	test -d "$LineageOS/$inc" && CPLUS_INCLUDE_PATH="$CPLUS_INCLUDE_PATH:$LineageOS/$inc"
+done
+fi
+export CPLUS_INCLUDE_PATH="$CPLUS_INCLUDE_PATH"
+/system/xbin/clang "$@"
