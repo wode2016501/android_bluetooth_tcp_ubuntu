@@ -1,3 +1,4 @@
+export HOME=/data/data/com.termux/files/home
 #echo "# android_bluetooth_tcp_ubuntu" >> README.md
 git init
 git add .
