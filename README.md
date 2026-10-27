@@ -1,3 +1,4 @@
+a.out default android10
 android:
 ```sh
 sh build.sh
