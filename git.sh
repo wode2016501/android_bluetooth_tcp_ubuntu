@@ -9,4 +9,6 @@ git push -u origin main
 exit
 git remote add origin https://github.com/wode2016501/android_bluetooth_tcp_ubuntu.git
 git branch -M main
+echo "export https_proxy=socks://127.0.0.1:10808"
 git push -u origin main
+
